@@ -1,49 +1,91 @@
-import os
+import sys
+import subprocess
+import json
+import requests
 import zipfile
 import shutil
-import subprocess
+import io
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parent.resolve()
-DOWNLOADS = Path.home() / "Downloads"
-UPDATE_NAME = "sciencefair_update.zip"
+# ==============================
+# CONFIG
+# ==============================
 
+GITHUB_USER = "CharlieSridhara"
+REPO_NAME = "sciencefair-system"
 
-def apply_update_if_exists():
-    update_path = DOWNLOADS / UPDATE_NAME
+REMOTE_VERSION_URL = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/main/version.json"
+REMOTE_ZIP_URL = f"https://github.com/{GITHUB_USER}/{REPO_NAME}/archive/refs/heads/main.zip"
 
-    if not update_path.exists():
-        return
+PROJECT_ROOT = Path(__file__).parent
+LOCAL_VERSION_FILE = PROJECT_ROOT / "version.json"
+APP_PATH = PROJECT_ROOT / "app" / "ui.py"
 
-    print("Update file detected. Applying update...")
+# ==============================
+def get_local_version():
+    if not LOCAL_VERSION_FILE.exists():
+        return "0.0.0"
+    with open(LOCAL_VERSION_FILE) as f:
+        return json.load(f)["version"]
 
-    with zipfile.ZipFile(update_path, 'r') as zip_ref:
-        for member in zip_ref.namelist():
+def get_remote_version():
+    try:
+        r = requests.get(REMOTE_VERSION_URL, timeout=5)
+        return r.json()["version"]
+    except:
+        return None
 
-            # Security: prevent absolute paths or parent traversal
-            if ".." in member or member.startswith("/"):
-                continue
+def update_project():
+    print("Updating project from GitHub...")
 
-            target_path = PROJECT_ROOT / member
+    r = requests.get(REMOTE_ZIP_URL)
+    z = zipfile.ZipFile(io.BytesIO(r.content))
 
-            # Ensure target stays inside project
-            if not str(target_path.resolve()).startswith(str(PROJECT_ROOT)):
-                continue
+    temp_dir = PROJECT_ROOT / "_update_temp"
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
 
-            # Create directories if needed
-            target_path.parent.mkdir(parents=True, exist_ok=True)
+    z.extractall(temp_dir)
 
-            with zip_ref.open(member) as source, open(target_path, "wb") as target:
-                shutil.copyfileobj(source, target)
+    extracted_root = next(temp_dir.iterdir())
 
-            print(f"Updated: {member}")
+    for item in extracted_root.iterdir():
+        if item.name == ".git":
+            continue
 
-    update_path.unlink()
-    print("Update complete. Launching system.\n")
+        target = PROJECT_ROOT / item.name
 
+        if target.exists():
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+
+        shutil.move(str(item), str(target))
+
+    shutil.rmtree(temp_dir)
+
+    print("Update complete.")
+
+# ==============================
+def main():
+
+    local_version = get_local_version()
+    remote_version = get_remote_version()
+
+    if remote_version and remote_version != local_version:
+        print(f"New version detected: {remote_version}")
+        update_project()
+
+    print("Launching FluoroBrush Pro...\n")
+
+    subprocess.run([
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(APP_PATH)
+    ])
 
 if __name__ == "__main__":
-
-    apply_update_if_exists()
-
-    subprocess.run(["streamlit", "run", "app/ui.py"])
+    main()
